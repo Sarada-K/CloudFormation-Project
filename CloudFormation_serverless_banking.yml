@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: This is a template for checking account balance of a user via API Gateway to AWS Lambda to S3 Bucket data
+
+Parameters:
+  LambdaTimeout:
+    Description: Minimum of 3 seconds to maximum of 900 seconds. Default is 60 seconds.
+    Type: String
+    Default: 60
+    
+  LambdaRuntime:
+    Description: Choose from python2.7 to python3.12. Default is the latest.
+    Type: String
+    Default: python3.12
+    AllowedValues:
+      - python2.7
+      - python3.6
+      - python3.7
+      - python3.8 
+      - python3.9 
+      - python3.10
+      - python3.11
+      - python3.12
+    
+  APIStageName:
+    Description: Choose from the values of Dev, QA and Prod. Default is Dev
+    Type: String
+    Default: Dev
+    AllowedValues:
+      - Dev
+      - QA
+      - Prod
+
+Resources:
+  BankingS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: accountdetailswithbalance3008
+      
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Description: Lambda execution role to access S3 bucket
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      RoleName: LambdaexecutionRole
+      
+  Lambdafunction:
+    DependsOn: LambdaExecutionRole
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: !Ref LambdaRuntime
+      Role: !GetAtt LambdaExecutionRole.Arn 
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          
+          client = boto3.client('s3')
+          
+          def lambda_handler(event, context):
+            response = client.get_object(
+              Bucket = 'accountdetailswithbalance3008',
+              Key = 'accountBalance.json',
+              )
+              
+            data_byte = response['Body'].read()
+            data_string = data_byte.decode("UTF-8")
+            data_dict = json.loads(data_string)
+            
+            return{
+              'StatusCode' : 200,
+              'Body' : json.dumps(data_dict),
+              'Headers' : {'Content-Type' : 'application/json'},
+            }
+      Description: Lambda function to read data from S3
+      Timeout: !Ref LambdaTimeout
+      
+  BankingRestAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: AccountBalanceApi
+      
+  AccountBalanceResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt BankingRestAPI.RootResourceId
+      PathPart: balanceStatus01
+      RestApiId: !Ref BankingRestAPI
+
+  BankingStatusMethod:
+    DependsOn: AccountBalanceResource
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref BankingRestAPI
+      ResourceId: !Ref AccountBalanceResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        IntegrationResponses:
+          - StatusCode: '200'
+        Uri: !Sub  arn:aws:apigateway:ap-south-1:lambda:path/2015-03-31/functions/${Lambdafunction.Arn}/invocations
+         
+  ApiDeployment:
+    DependsOn: BankingStatusMethod
+    Type: 'AWS::ApiGateway::Deployment'
+    Properties:
+      RestApiId: !Ref BankingRestAPI
+      Description: My deployment to Prod
+      StageName: !Ref APIStageName
+    
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt Lambdafunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+
+  
